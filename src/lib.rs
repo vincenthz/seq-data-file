@@ -50,6 +50,43 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
         })
     }
 
+    /// Open a SeqData File at the location specified
+    ///
+    /// If the file already exists, this call will fail
+    ///
+    /// The header need to fits the size of Format::HEADER_SIZE
+    pub fn open<P: AsRef<Path>>(path: P, header: &[u8]) -> std::io::Result<(Self, Vec<u8>)> {
+        if Format::HEADER_SIZE != header.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "header has invalid size, expecting {} but got {}",
+                    Format::HEADER_SIZE,
+                    header.len()
+                ),
+            ));
+        }
+
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(false)
+            .append(true)
+            .open(path)?;
+
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let header = read_magic_and_header(PhantomData::<Format>, &mut file)?;
+        file.seek(std::io::SeekFrom::End(0))?;
+
+        Ok((
+            SeqDataWriter {
+                file,
+                phantom: PhantomData,
+            },
+            header,
+        ))
+    }
+
     /// Append a new data chunk to this file
     pub fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
         assert!(data.len() <= 0xffff_ffff);
