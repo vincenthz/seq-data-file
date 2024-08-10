@@ -4,6 +4,11 @@ use std::io::{BufReader, Read, Seek, Write};
 use std::marker::PhantomData;
 use std::path::Path;
 
+mod ioutils;
+
+use ioutils::optional_read_exact;
+pub use ioutils::truncate_at;
+
 /// Format configuration for SeqData
 pub trait SeqDataFormat {
     /// Magic bytes. can be empty
@@ -89,12 +94,7 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
 
     /// Append a new data chunk to this file
     pub fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
-        assert!(data.len() <= 0xffff_ffff);
-        let len: u32 = data.len() as u32;
-        let header = len.to_le_bytes();
-        self.file.write_all(&header)?;
-        self.file.write_all(data)?;
-        Ok(())
+        write_chunk(&mut self.file, data)
     }
 }
 
@@ -104,36 +104,6 @@ pub struct SeqDataReader<Format: SeqDataFormat> {
     pos: u64,
     len: u64,
     phantom: PhantomData<Format>,
-}
-
-/// this is a version of read_exact that returns a None if the stream is empty
-fn optional_read_exact<R: Read + ?Sized>(
-    this: &mut R,
-    mut buf: &mut [u8],
-) -> Option<std::io::Result<()>> {
-    let mut read_bytes = 0;
-    while !buf.is_empty() {
-        match this.read(buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let tmp = buf;
-                buf = &mut tmp[n..];
-                read_bytes += n;
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Some(Err(e)),
-        }
-    }
-    if read_bytes == 0 {
-        None
-    } else if !buf.is_empty() {
-        Some(Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "buffer partially filled",
-        )))
-    } else {
-        Some(Ok(()))
-    }
 }
 
 fn read_magic_and_header<Format: SeqDataFormat>(
@@ -165,23 +135,6 @@ fn read_magic_and_header<Format: SeqDataFormat>(
     let mut header = vec![0u8; Format::HEADER_SIZE];
     file.read_exact(&mut header)?;
     Ok(header)
-}
-
-fn get_file_length<Format: SeqDataFormat>(
-    _phantom: PhantomData<Format>,
-    file: &mut File,
-) -> std::io::Result<u64> {
-    let meta = file.metadata()?;
-    let total_len = meta.len();
-
-    let minimum_size = Format::MAGIC.len() as u64 + Format::HEADER_SIZE as u64;
-    if total_len < minimum_size {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "file not contains enough bytes for magic and header",
-        ));
-    }
-    Ok(total_len - minimum_size)
 }
 
 impl<Format: SeqDataFormat> SeqDataReader<Format> {
@@ -216,37 +169,16 @@ impl<Format: SeqDataFormat> SeqDataReader<Format> {
     /// Return the next block along with the current offset if it exists, or None if
     /// reached the end of file.
     pub fn next(&mut self) -> Option<std::io::Result<(u64, Vec<u8>)>> {
-        let mut lenbuf = [0; 4];
-        // try to read the length, if the length return a none, we just expect
-        // having reached the end of the stream then
-        match optional_read_exact(&mut self.buf_reader, &mut lenbuf) {
+        match read_chunk(&mut self.buf_reader) {
             None => None,
             Some(Err(e)) => Some(Err(e)),
-            Some(Ok(())) => {
-                let len = u32::from_le_bytes(lenbuf);
-                let mut out = vec![0; len as usize];
-                match self.buf_reader.read_exact(&mut out) {
-                    Err(e) => Some(Err(e)),
-                    Ok(()) => {
-                        let old_pos = self.pos;
-                        self.pos += 4 + len as u64;
-                        Some(Ok((old_pos, out)))
-                    }
-                }
+            Some(Ok(buf)) => {
+                let current_pos = self.pos;
+                self.pos += size_of::<PrefixLength>() as u64 + buf.len() as u64;
+                Some(Ok((current_pos, buf)))
             }
         }
     }
-}
-
-pub fn truncate_at(path: &Path, len: u64) -> std::io::Result<()> {
-    let file = OpenOptions::new()
-        .read(false)
-        .write(true)
-        .create(false)
-        .append(false)
-        .open(path)?;
-    file.set_len(len)?;
-    Ok(())
 }
 
 /// Seq Data Reader with seek
@@ -282,20 +214,7 @@ impl<Format: SeqDataFormat> SeqDataReaderSeek<Format> {
     /// Return the next block along with the current offset if it exists, or None if
     /// reached the end of file.
     pub fn next(&mut self) -> std::io::Result<Vec<u8>> {
-        let mut lenbuf = [0; 4];
-        // try to read the length, if the length return a none, we just expect
-        // having reached the end of the stream then
-        match self.handle.read_exact(&mut lenbuf) {
-            Err(e) => Err(e),
-            Ok(()) => {
-                let len = u32::from_le_bytes(lenbuf);
-                let mut out = vec![0; len as usize];
-                match self.handle.read_exact(&mut out) {
-                    Err(e) => Err(e),
-                    Ok(()) => Ok(out),
-                }
-            }
-        }
+        read_chunk(&mut self.handle).unwrap()
     }
 
     /// Return the next block at the offset specified
@@ -318,4 +237,53 @@ impl<Format: SeqDataFormat> SeqDataReaderSeek<Format> {
         self.handle.seek(std::io::SeekFrom::Start(seek))?;
         self.next()
     }
+}
+
+type PrefixLength = u32;
+
+fn read_chunk<R: Read>(file: &mut R) -> Option<std::io::Result<Vec<u8>>> {
+    let mut lenbuf = [0; size_of::<PrefixLength>()];
+    // try to read the length, if the length return a none, we just expect
+    // having reached the end of the stream then
+    match optional_read_exact(file, &mut lenbuf) {
+        None => None,
+        Some(Err(e)) => Some(Err(e)),
+        Some(Ok(())) => {
+            let len = PrefixLength::from_le_bytes(lenbuf);
+
+            // create a buffer of the prefix length 'len' and read all data
+            let mut out = vec![0; len as usize];
+            match file.read_exact(&mut out) {
+                Err(e) => Some(Err(e)),
+                Ok(()) => Some(Ok(out)),
+            }
+        }
+    }
+}
+
+fn write_chunk(file: &mut File, data: &[u8]) -> std::io::Result<()> {
+    let max = PrefixLength::MAX as usize;
+    assert!(data.len() <= max);
+    let len: u32 = data.len() as PrefixLength;
+    let header = len.to_le_bytes();
+    file.write_all(&header)?;
+    file.write_all(data)?;
+    Ok(())
+}
+
+fn get_file_length<Format: SeqDataFormat>(
+    _phantom: PhantomData<Format>,
+    file: &mut File,
+) -> std::io::Result<u64> {
+    let meta = file.metadata()?;
+    let total_len = meta.len();
+
+    let minimum_size = Format::MAGIC.len() as u64 + Format::HEADER_SIZE as u64;
+    if total_len < minimum_size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "file not contains enough bytes for magic and header",
+        ));
+    }
+    Ok(total_len - minimum_size)
 }
