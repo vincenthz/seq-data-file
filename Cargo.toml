@@ -11,7 +11,11 @@ keywords = ["file", "format", "archive"]
 categories = ["filesystem"]
 
 [dependencies]
+tokio = { version = "1", optional = true, features = ["fs", "io-util"] }
 
+[features]
+default = ["async"]
+async = ["dep:tokio"]
 
 [[example]]
 name = "run"
