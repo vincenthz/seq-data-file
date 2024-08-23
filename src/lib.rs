@@ -7,7 +7,8 @@ use std::path::Path;
 mod format;
 mod ioutils;
 
-mod r#async;
+#[cfg(feature = "async")]
+pub mod nonblocking;
 
 pub use format::{NoMagicNoHeader, SeqDataFormat};
 use ioutils::optional_read_exact;
