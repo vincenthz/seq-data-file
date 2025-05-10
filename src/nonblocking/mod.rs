@@ -50,18 +50,7 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
     /// If the file already exists, this call will fail
     ///
     /// The header need to fits the size of Format::HEADER_SIZE
-    pub async fn open<P: AsRef<Path>>(path: P, header: &[u8]) -> std::io::Result<(Self, Vec<u8>)> {
-        if Format::HEADER_SIZE != header.len() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "header has invalid size, expecting {} but got {}",
-                    Format::HEADER_SIZE,
-                    header.len()
-                ),
-            ));
-        }
-
+    pub async fn open<P: AsRef<Path>>(path: P) -> std::io::Result<(Self, Vec<u8>)> {
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
