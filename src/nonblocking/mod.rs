@@ -9,6 +9,7 @@ use crate::format::SeqDataFormat;
 /// Writer for a new SeqData
 pub struct SeqDataWriter<Format: SeqDataFormat> {
     file: File,
+    pos: u64,
     phantom: PhantomData<Format>,
 }
 
@@ -39,8 +40,10 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
             .await?;
         file.write_all(&Format::MAGIC).await?;
         file.write_all(header).await?;
+        let pos = (Format::HEADER_SIZE + Format::MAGIC.len()) as u64;
         Ok(SeqDataWriter {
             file,
+            pos,
             phantom: PhantomData,
         })
     }
@@ -61,11 +64,12 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
 
         file.seek(std::io::SeekFrom::Start(0)).await?;
         let header = read_magic_and_header(PhantomData::<Format>, &mut file).await?;
-        file.seek(std::io::SeekFrom::End(0)).await?;
+        let pos = file.seek(std::io::SeekFrom::End(0)).await?;
 
         Ok((
             SeqDataWriter {
                 file,
+                pos,
                 phantom: PhantomData,
             },
             header,
@@ -74,7 +78,14 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
 
     /// Append a new data chunk to this file
     pub async fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
+        let len = size_of::<PrefixLength>() + data.len();
+        self.pos += len as u64;
         write_chunk(&mut self.file, data).await
+    }
+
+    /// Get the position of the stream
+    pub fn position(&mut self) -> u64 {
+        self.pos
     }
 }
 
