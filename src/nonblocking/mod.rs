@@ -84,7 +84,7 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
     }
 
     /// Get the position of the stream
-    pub fn position(&mut self) -> u64 {
+    pub fn position(&self) -> u64 {
         self.pos
     }
 }
