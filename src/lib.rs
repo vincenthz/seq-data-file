@@ -17,6 +17,7 @@ pub use ioutils::truncate_at;
 /// Writer for a new SeqData
 pub struct SeqDataWriter<Format: SeqDataFormat> {
     file: File,
+    pos: u64,
     phantom: PhantomData<Format>,
 }
 
@@ -46,8 +47,10 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
             .open(path)?;
         file.write_all(&Format::MAGIC)?;
         file.write_all(header)?;
+        let pos = (Format::MAGIC.len() + header.len()) as u64;
         Ok(SeqDataWriter {
             file,
+            pos,
             phantom: PhantomData,
         })
     }
@@ -78,20 +81,28 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
 
         file.seek(std::io::SeekFrom::Start(0))?;
         let header = read_magic_and_header(PhantomData::<Format>, &mut file)?;
-        file.seek(std::io::SeekFrom::End(0))?;
+        let pos = file.seek(std::io::SeekFrom::End(0))?;
 
         Ok((
             SeqDataWriter {
                 file,
+                pos,
                 phantom: PhantomData,
             },
             header,
         ))
     }
 
+    pub fn position(&self) -> u64 {
+        self.pos
+    }
+
     /// Append a new data chunk to this file
     pub fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
-        write_chunk(&mut self.file, data)
+        let len = size_of::<PrefixLength>() + data.len();
+        write_chunk(&mut self.file, data)?;
+        self.pos += len as u64;
+        Ok(())
     }
 }
 

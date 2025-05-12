@@ -79,8 +79,9 @@ impl<Format: SeqDataFormat> SeqDataWriter<Format> {
     /// Append a new data chunk to this file
     pub async fn append(&mut self, data: &[u8]) -> std::io::Result<()> {
         let len = size_of::<PrefixLength>() + data.len();
+        write_chunk(&mut self.file, data).await?;
         self.pos += len as u64;
-        write_chunk(&mut self.file, data).await
+        Ok(())
     }
 
     /// Get the position of the stream
