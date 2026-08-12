@@ -245,6 +245,16 @@ impl<Format: SeqDataFormat> SeqDataReaderSeek<Format> {
         self.handle.seek(std::io::SeekFrom::Start(seek))?;
         self.next()
     }
+
+    /// Sync file stats
+    ///
+    /// This is useful if the file has been appended/truncated
+    pub fn sync_stats(&mut self) -> std::io::Result<()> {
+        let len = get_file_length(self.phantom, &mut self.handle)?;
+        self.len = len;
+        self.handle.seek(std::io::SeekFrom::Start(self.start))?;
+        Ok(())
+    }
 }
 
 type PrefixLength = u32;
